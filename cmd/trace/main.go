@@ -28,7 +28,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|search|rebuild-index|semantic-status|entity-lookup|traverse|policy-add|forget|ingest|serve|history|explain|diff> ...")
+		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|search|rebuild-index|semantic-status|entity-lookup|traverse|policy-add|forget|ingest|serve|export|import|history|explain|diff> ...")
 	}
 
 	switch args[0] {
@@ -62,6 +62,10 @@ func run(ctx context.Context, args []string) error {
 		return runIngest(ctx, args[1:])
 	case "serve":
 		return runServe(ctx, args[1:])
+	case "export":
+		return runExport(ctx, args[1:])
+	case "import":
+		return runImport(ctx, args[1:])
 	case "history":
 		return runHistory(ctx, args[1:])
 	case "explain":
@@ -723,6 +727,55 @@ func runServe(ctx context.Context, args []string) error {
 		Handler: api.NewServer(store),
 	}
 	return server.ListenAndServe()
+}
+
+func runExport(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return errors.New("usage: trace export [--json] FILE DESTINATION")
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	manifest, err := store.ExportBundle(ctx, fs.Arg(1))
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(manifest)
+	}
+	fmt.Printf("bundle: %s\n", manifest.BundleID)
+	fmt.Printf("destination: %s\n", fs.Arg(1))
+	return nil
+}
+
+func runImport(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	mode := fs.String("mode", "merge", "new or merge")
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return errors.New("usage: trace import [--mode new|merge] [--json] SOURCE FILE")
+	}
+	result, err := storage.ImportBundle(ctx, fs.Arg(0), fs.Arg(1), *mode)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(result)
+	}
+	fmt.Printf("bundle: %s\n", result.BundleID)
+	fmt.Printf("id mappings: %d\n", len(result.IDMap))
+	fmt.Printf("idempotent: %t\n", result.Idempotent)
+	return nil
 }
 
 func runHistory(ctx context.Context, args []string) error {

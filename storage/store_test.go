@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -853,6 +854,163 @@ func TestSemanticIndexRelationshipsAndEntityLookup(t *testing.T) {
 	}
 	if !status.Stale || status.Ready {
 		t.Fatalf("stale semantic status = %#v, want stale", status)
+	}
+}
+
+func TestBundleExportImportRoundTripAndIdempotency(t *testing.T) {
+	ctx := context.Background()
+	source := newTestStore(t)
+	event, err := source.AddEvent(ctx, model.EventInput{
+		EventType: "conversation.message",
+		Payload:   json.RawMessage(`{"content":"bundle source"}`),
+		Namespace: "user:tim",
+	})
+	if err != nil {
+		t.Fatalf("add event: %v", err)
+	}
+	if _, err := source.AddMemory(ctx, model.MemoryInput{
+		Kind:        "fact",
+		Content:     "bundle fact",
+		Namespace:   "user:tim",
+		DerivedFrom: []string{event.ID},
+	}); err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	bundlePath := filepath.Join(t.TempDir(), "trace-bundle")
+	manifest, err := source.ExportBundle(ctx, bundlePath)
+	if err != nil {
+		t.Fatalf("export bundle: %v", err)
+	}
+	if manifest.BundleID == "" || manifest.Counts["event"] != 1 || manifest.Counts["memory"] != 1 {
+		t.Fatalf("bundle manifest = %#v", manifest)
+	}
+	targetPath := filepath.Join(t.TempDir(), "imported.trc")
+	result, err := ImportBundle(ctx, bundlePath, targetPath, "new")
+	if err != nil {
+		t.Fatalf("import bundle: %v", err)
+	}
+	if result.Idempotent || result.IDMap[event.ID] != event.ID {
+		t.Fatalf("import result = %#v, want non-idempotent identity-preserving import", result)
+	}
+	target, err := Open(ctx, targetPath, false)
+	if err != nil {
+		t.Fatalf("open imported target: %v", err)
+	}
+	defer target.Close()
+	inspection, err := target.Inspect(ctx)
+	if err != nil {
+		t.Fatalf("inspect imported target: %v", err)
+	}
+	if inspection.Counts["event"] != 1 || inspection.Counts["memory"] != 1 {
+		t.Fatalf("imported counts = %#v, want one event and memory", inspection.Counts)
+	}
+	report, err := target.Validate(ctx)
+	if err != nil {
+		t.Fatalf("validate imported target: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("imported target validation errors: %v", report.Errors)
+	}
+	repeated, err := ImportBundle(ctx, bundlePath, targetPath, "merge")
+	if err != nil {
+		t.Fatalf("repeat bundle import: %v", err)
+	}
+	if !repeated.Idempotent || repeated.BundleID != manifest.BundleID {
+		t.Fatalf("repeat import = %#v, want idempotent result", repeated)
+	}
+}
+
+func TestBundleChecksumFailureDoesNotCreateTarget(t *testing.T) {
+	ctx := context.Background()
+	source := newTestStore(t)
+	if _, err := source.AddMemory(ctx, model.MemoryInput{
+		Kind:      "fact",
+		Content:   "checksum source",
+		Namespace: "user:tim",
+	}); err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	bundlePath := filepath.Join(t.TempDir(), "trace-bundle")
+	if _, err := source.ExportBundle(ctx, bundlePath); err != nil {
+		t.Fatalf("export bundle: %v", err)
+	}
+	eventsPath := filepath.Join(bundlePath, "events.jsonl")
+	events, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read events bundle: %v", err)
+	}
+	if err := os.WriteFile(eventsPath, append(events, []byte(`{"tampered":true}`+"\n")...), 0o644); err != nil {
+		t.Fatalf("tamper events bundle: %v", err)
+	}
+	targetPath := filepath.Join(t.TempDir(), "target.trc")
+	if _, err := ImportBundle(ctx, bundlePath, targetPath, "new"); err == nil {
+		t.Fatal("checksum failure was accepted")
+	}
+	if _, err := os.Stat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("checksum failure created target: %v", err)
+	}
+}
+
+func TestBundleMergeRemapsConflictingRecordIDs(t *testing.T) {
+	ctx := context.Background()
+	sourcePath := filepath.Join(t.TempDir(), "source.trc")
+	if err := Init(ctx, sourcePath, "bundle-test"); err != nil {
+		t.Fatalf("init source: %v", err)
+	}
+	source, err := Open(ctx, sourcePath, false)
+	if err != nil {
+		t.Fatalf("open source: %v", err)
+	}
+	defer source.Close()
+	const recordID = "bundle-conflict-event"
+	if _, err := source.AddEvent(ctx, model.EventInput{
+		ID:        recordID,
+		EventType: "source",
+		Payload:   json.RawMessage(`{"value":"source"}`),
+		Namespace: "user:tim",
+	}); err != nil {
+		t.Fatalf("add source event: %v", err)
+	}
+	bundlePath := filepath.Join(t.TempDir(), "trace-bundle")
+	if _, err := source.ExportBundle(ctx, bundlePath); err != nil {
+		t.Fatalf("export source bundle: %v", err)
+	}
+	targetPath := filepath.Join(t.TempDir(), "target.trc")
+	if err := Init(ctx, targetPath, "bundle-test"); err != nil {
+		t.Fatalf("init target: %v", err)
+	}
+	target, err := Open(ctx, targetPath, false)
+	if err != nil {
+		t.Fatalf("open target: %v", err)
+	}
+	if _, err := target.AddEvent(ctx, model.EventInput{
+		ID:        recordID,
+		EventType: "target",
+		Payload:   json.RawMessage(`{"value":"target"}`),
+		Namespace: "user:tim",
+	}); err != nil {
+		target.Close()
+		t.Fatalf("add target event: %v", err)
+	}
+	target.Close()
+	result, err := ImportBundle(ctx, bundlePath, targetPath, "merge")
+	if err != nil {
+		t.Fatalf("merge conflicting bundle: %v", err)
+	}
+	if result.IDMap[recordID] == recordID || result.IDMap[recordID] == "" {
+		t.Fatalf("merge ID map = %#v, want remapped event", result.IDMap)
+	}
+	merged, err := Open(ctx, targetPath, true)
+	if err != nil {
+		t.Fatalf("open merged target: %v", err)
+	}
+	defer merged.Close()
+	inspection, err := merged.Inspect(ctx)
+	if err != nil {
+		t.Fatalf("inspect merged target: %v", err)
+	}
+	if inspection.Counts["event"] != 2 {
+		t.Fatalf("merged event count = %d, want 2", inspection.Counts["event"])
 	}
 }
 

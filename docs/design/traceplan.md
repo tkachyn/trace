@@ -2171,6 +2171,8 @@ adapter, not a replacement for the Trace API or file format.
 
 ### Phase 8: interoperability and migration
 
+Status: implemented in the Go core
+
 Deliverables:
 
 - complete Trace JSONL bundle profile
@@ -2179,6 +2181,19 @@ Deliverables:
 - loss and approximation reports
 - stable identifier mapping for merges
 - signed or integrity-verified bundle design if required by users
+
+Implementation decisions:
+
+- the v0.1 bundle is a deterministic directory profile with versioned JSONL
+  files and a SHA-256 `CHECKSUMS` file
+- export includes canonical records and excludes rebuildable FTS and semantic
+  indexes
+- import verifies the manifest and checksums before opening or mutating the
+  target, then commits records and an import ledger atomically
+- collision-free IDs are preserved, canonical hash matches are reused, and
+  conflicting IDs receive generated mappings
+- Trace-to-Trace imports report lossless preservation; future provider
+  adapters use structured loss reports rather than silently dropping fields
 
 Exit criteria:
 
