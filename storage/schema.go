@@ -146,6 +146,12 @@ CREATE TABLE IF NOT EXISTS deletion (
     details TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS bundle_import (
+    bundle_id TEXT PRIMARY KEY,
+    source_file_id TEXT NOT NULL,
+    imported_at TEXT NOT NULL
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_fts USING fts5(
     record_id UNINDEXED,
     record_kind UNINDEXED,
