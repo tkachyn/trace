@@ -1993,6 +1993,8 @@ Exit criteria:
 
 ### Phase 3: deterministic local retrieval
 
+Status: implemented in the Go core
+
 Deliverables:
 
 - exact lookup
@@ -2003,6 +2005,21 @@ Deliverables:
 - abstention thresholds
 - reproducible context compilation
 - score breakdowns
+
+Implementation decisions:
+
+- retrieval searches canonical memories by default and can explicitly include
+  source events
+- SQLite FTS5 is a rebuildable accelerator; canonical records remain the
+  source of truth
+- exact IDs and content hashes are deterministic lookup paths independent of
+  full-text availability
+- scores combine exact, text, metadata, temporal, recency, and conflict
+  components with stable ID tie-breaking
+- strict retrieval omits compiled context for weak or unresolved conflicting
+  evidence while retaining the structured result
+- namespace scope and temporal filters are applied before ranking and context
+  compilation
 
 Exit criteria:
 

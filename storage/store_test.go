@@ -371,6 +371,129 @@ func TestContradictionsRemainVisible(t *testing.T) {
 	}
 }
 
+func TestDeterministicRetrievalAndContextCompilation(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	event, err := store.AddEvent(ctx, model.EventInput{
+		EventType:  "conversation.message",
+		Payload:    json.RawMessage(`{"content":"Tim prefers Go"}`),
+		RecordedAt: start,
+		Namespace:  "user:tim",
+	})
+	if err != nil {
+		t.Fatalf("add event: %v", err)
+	}
+	goMemory, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:        "fact",
+		Content:     "Tim prefers Go",
+		RecordedAt:  start,
+		ValidFrom:   &start,
+		Namespace:   "user:tim",
+		Predicate:   "prefers",
+		ObjectValue: "Go",
+		DerivedFrom: []string{event.ID},
+	})
+	if err != nil {
+		t.Fatalf("add Go memory: %v", err)
+	}
+	pythonMemory, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:        "fact",
+		Content:     "Tim prefers Python",
+		RecordedAt:  start.Add(time.Hour),
+		ValidFrom:   &start,
+		Namespace:   "user:tim",
+		Predicate:   "prefers",
+		ObjectValue: "Python",
+	})
+	if err != nil {
+		t.Fatalf("add Python memory: %v", err)
+	}
+	if _, err := store.AddRelation(ctx, model.RelationInput{
+		SourceID: goMemory.ID,
+		TargetID: pythonMemory.ID,
+		Relation: model.RelationContradicts,
+	}); err != nil {
+		t.Fatalf("add contradiction: %v", err)
+	}
+
+	result, err := store.Search(ctx, model.RetrievalQuery{
+		Text:             "prefers Go",
+		NamespaceScope:   []string{"user:tim"},
+		ValidAt:          timePointer(start.Add(time.Hour)),
+		ContextByteLimit: 200,
+	})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if result.EvidenceState != "supported" {
+		t.Fatalf("evidence state = %q, want supported", result.EvidenceState)
+	}
+	if len(result.Hits) != 1 || result.Hits[0].ID != goMemory.ID {
+		t.Fatalf("retrieval hits = %#v, want Go memory", result.Hits)
+	}
+	if result.Context.HitIDs[0] != goMemory.ID || result.Context.Bytes == 0 {
+		t.Fatalf("compiled context = %#v, want Go memory", result.Context)
+	}
+
+	exact, err := store.Search(ctx, model.RetrievalQuery{
+		ExactIDs: []string{pythonMemory.ID},
+		Kind:     "memory",
+	})
+	if err != nil {
+		t.Fatalf("exact search: %v", err)
+	}
+	if len(exact.Hits) != 1 || exact.Hits[0].ID != pythonMemory.ID {
+		t.Fatalf("exact hits = %#v, want Python memory", exact.Hits)
+	}
+	if exact.Hits[0].Score.ExactMatch != 1 {
+		t.Fatalf("exact score = %#v, want exact match", exact.Hits[0].Score)
+	}
+
+	conflicting, err := store.Search(ctx, model.RetrievalQuery{
+		Namespace:         "user:tim",
+		ValidAt:           timePointer(start.Add(time.Hour)),
+		IncludeSuperseded: true,
+	})
+	if err != nil {
+		t.Fatalf("conflict search: %v", err)
+	}
+	if conflicting.EvidenceState != "conflicting" {
+		t.Fatalf("conflict evidence state = %q, want conflicting", conflicting.EvidenceState)
+	}
+	strict, err := store.Search(ctx, model.RetrievalQuery{
+		Namespace: "user:tim",
+		ValidAt:   timePointer(start.Add(time.Hour)),
+		Strict:    true,
+	})
+	if err != nil {
+		t.Fatalf("strict conflict search: %v", err)
+	}
+	if strict.Context.Content != "" {
+		t.Fatalf("strict conflict context = %q, want empty", strict.Context.Content)
+	}
+
+	before := result.Context.Content
+	if err := store.RebuildRetrievalIndex(ctx); err != nil {
+		t.Fatalf("rebuild retrieval index: %v", err)
+	}
+	after, err := store.Search(ctx, model.RetrievalQuery{
+		Text:           "prefers Go",
+		NamespaceScope: []string{"user:tim"},
+		ValidAt:        timePointer(start.Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("search after rebuild: %v", err)
+	}
+	if len(after.Hits) != 1 || after.Hits[0].ID != goMemory.ID {
+		t.Fatalf("rebuilt retrieval hits = %#v, want Go memory", after.Hits)
+	}
+	if before != after.Context.Content {
+		t.Fatalf("context after rebuild = %q, want %q", after.Context.Content, before)
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	ctx := context.Background()

@@ -24,7 +24,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|history|explain|diff> ...")
+		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|search|rebuild-index|history|explain|diff> ...")
 	}
 
 	switch args[0] {
@@ -40,6 +40,10 @@ func run(ctx context.Context, args []string) error {
 		return runRemember(ctx, args[1:])
 	case "query":
 		return runQuery(ctx, args[1:])
+	case "search":
+		return runSearch(ctx, args[1:])
+	case "rebuild-index":
+		return runRebuildIndex(ctx, args[1:])
 	case "history":
 		return runHistory(ctx, args[1:])
 	case "explain":
@@ -320,6 +324,103 @@ func runQuery(ctx context.Context, args []string) error {
 	return nil
 }
 
+func runSearch(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("search", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	text := fs.String("text", "", "text to search")
+	exactIDs := fs.String("id", "", "comma-separated exact record IDs")
+	contentHash := fs.String("hash", "", "exact content hash")
+	namespace := fs.String("namespace", "", "namespace filter")
+	namespaceScope := fs.String("namespace-scope", "", "comma-separated namespace scope")
+	kind := fs.String("kind", "memory", "memory, event, or all")
+	subject := fs.String("subject", "", "subject entity ID filter")
+	predicate := fs.String("predicate", "", "predicate filter")
+	objectValue := fs.String("object", "", "object value filter")
+	validAt := fs.String("valid-at", "", "RFC3339 point-in-time filter")
+	recordedBefore := fs.String("recorded-before", "", "exclusive RFC3339 recorded-time filter")
+	recordedAfter := fs.String("recorded-after", "", "inclusive RFC3339 recorded-time filter")
+	includeSuperseded := fs.Bool("include-superseded", false, "include superseded memories")
+	includeInvalidated := fs.Bool("include-invalidated", false, "include invalidated memories")
+	includeRedacted := fs.Bool("include-redacted", false, "include redacted memories")
+	minimumScore := fs.Float64("min-score", 0, "minimum deterministic score")
+	strict := fs.Bool("strict", false, "omit context for weak or conflicting evidence")
+	limit := fs.Int("limit", 100, "maximum number of hits")
+	contextBytes := fs.Int("context-bytes", 0, "maximum compiled context bytes")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: trace search [flags] FILE")
+	}
+	point, err := parseOptionalTime(*validAt)
+	if err != nil {
+		return fmt.Errorf("valid-at: %w", err)
+	}
+	before, err := parseOptionalTime(*recordedBefore)
+	if err != nil {
+		return fmt.Errorf("recorded-before: %w", err)
+	}
+	after, err := parseOptionalTime(*recordedAfter)
+	if err != nil {
+		return fmt.Errorf("recorded-after: %w", err)
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	result, err := store.Search(ctx, model.RetrievalQuery{
+		Text:               *text,
+		ExactIDs:           splitCSV(*exactIDs),
+		ContentHash:        *contentHash,
+		Namespace:          *namespace,
+		NamespaceScope:     splitCSV(*namespaceScope),
+		Kind:               *kind,
+		SubjectEntityID:    *subject,
+		Predicate:          *predicate,
+		ObjectValue:        *objectValue,
+		ValidAt:            point,
+		RecordedBefore:     before,
+		RecordedAfter:      after,
+		IncludeSuperseded:  *includeSuperseded,
+		IncludeInvalidated: *includeInvalidated,
+		IncludeRedacted:    *includeRedacted,
+		MinimumScore:       *minimumScore,
+		Strict:             *strict,
+		Limit:              *limit,
+		ContextByteLimit:   *contextBytes,
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(result)
+	}
+	fmt.Printf("evidence: %s\n", result.EvidenceState)
+	fmt.Printf("hits: %d\n", len(result.Hits))
+	for _, hit := range result.Hits {
+		fmt.Printf("%s [%s] %.3f %s\n", hit.ID, hit.Kind, hit.Score.Total, hit.Content)
+	}
+	fmt.Printf("context bytes: %d\n", result.Context.Bytes)
+	return nil
+}
+
+func runRebuildIndex(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("rebuild-index", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: trace rebuild-index FILE")
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), false)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	return store.RebuildRetrievalIndex(ctx)
+}
+
 func runHistory(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("history", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
@@ -443,4 +544,14 @@ func writeJSON(value any) error {
 	}
 	fmt.Println(string(encoded))
 	return nil
+}
+
+func splitCSV(value string) []string {
+	var result []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			result = append(result, item)
+		}
+	}
+	return result
 }
