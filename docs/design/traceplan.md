@@ -2030,6 +2030,8 @@ Exit criteria:
 
 ### Phase 4: policy and deletion
 
+Status: implemented in the Go core
+
 Deliverables:
 
 - namespace-scoped policies
@@ -2040,6 +2042,19 @@ Deliverables:
 - index deletion
 - deletion validation
 - negative authorization tests
+
+Implementation decisions:
+
+- protected APIs use an explicit principal, operation, and optional purpose
+  access context
+- policy evaluation is exact-match for principal, operation, namespace, record
+  kind, and record ID, with deny precedence and fail-closed defaults
+- dependency-closure forgetting follows `derived_from` edges and commits
+  tombstones or redactions atomically
+- tombstones remove canonical records and retrieval documents; redactions
+  retain stable identity while replacing sensitive payloads and hashes
+- repeated forget requests are idempotent, and validation checks policy and
+  deletion metadata
 
 Exit criteria:
 

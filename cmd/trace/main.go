@@ -24,7 +24,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|search|rebuild-index|history|explain|diff> ...")
+		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|search|rebuild-index|policy-add|forget|history|explain|diff> ...")
 	}
 
 	switch args[0] {
@@ -44,6 +44,10 @@ func run(ctx context.Context, args []string) error {
 		return runSearch(ctx, args[1:])
 	case "rebuild-index":
 		return runRebuildIndex(ctx, args[1:])
+	case "policy-add":
+		return runPolicyAdd(ctx, args[1:])
+	case "forget":
+		return runForget(ctx, args[1:])
 	case "history":
 		return runHistory(ctx, args[1:])
 	case "explain":
@@ -274,6 +278,8 @@ func runQuery(ctx context.Context, args []string) error {
 	includeSuperseded := fs.Bool("include-superseded", false, "include superseded memories")
 	includeInvalidated := fs.Bool("include-invalidated", false, "include invalidated memories")
 	includeRedacted := fs.Bool("include-redacted", false, "include redacted memories")
+	caller := fs.String("caller", "", "caller principal for policy evaluation")
+	purpose := fs.String("purpose", "", "access purpose for policy evaluation")
 	limit := fs.Int("limit", 100, "maximum number of memories")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -299,7 +305,7 @@ func runQuery(ctx context.Context, args []string) error {
 		return err
 	}
 	defer store.Close()
-	result, err := store.QueryMemories(ctx, model.MemoryQuery{
+	query := model.MemoryQuery{
 		Namespace:          *namespace,
 		ValidAt:            point,
 		RecordedBefore:     before,
@@ -308,7 +314,16 @@ func runQuery(ctx context.Context, args []string) error {
 		IncludeInvalidated: *includeInvalidated,
 		IncludeRedacted:    *includeRedacted,
 		Limit:              *limit,
-	})
+	}
+	var result model.QueryResult
+	if *caller == "" {
+		result, err = store.QueryMemories(ctx, query)
+	} else {
+		result, err = store.QueryMemoriesAuthorized(ctx, query, model.AccessContext{
+			Principal: *caller,
+			Purpose:   *purpose,
+		})
+	}
 	if err != nil {
 		return err
 	}
@@ -346,6 +361,8 @@ func runSearch(ctx context.Context, args []string) error {
 	strict := fs.Bool("strict", false, "omit context for weak or conflicting evidence")
 	limit := fs.Int("limit", 100, "maximum number of hits")
 	contextBytes := fs.Int("context-bytes", 0, "maximum compiled context bytes")
+	caller := fs.String("caller", "", "caller principal for policy evaluation")
+	purpose := fs.String("purpose", "", "access purpose for policy evaluation")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -369,7 +386,7 @@ func runSearch(ctx context.Context, args []string) error {
 		return err
 	}
 	defer store.Close()
-	result, err := store.Search(ctx, model.RetrievalQuery{
+	query := model.RetrievalQuery{
 		Text:               *text,
 		ExactIDs:           splitCSV(*exactIDs),
 		ContentHash:        *contentHash,
@@ -389,7 +406,16 @@ func runSearch(ctx context.Context, args []string) error {
 		Strict:             *strict,
 		Limit:              *limit,
 		ContextByteLimit:   *contextBytes,
-	})
+	}
+	var result model.RetrievalResult
+	if *caller == "" {
+		result, err = store.Search(ctx, query)
+	} else {
+		result, err = store.SearchAuthorized(ctx, query, model.AccessContext{
+			Principal: *caller,
+			Purpose:   *purpose,
+		})
+	}
 	if err != nil {
 		return err
 	}
@@ -421,9 +447,93 @@ func runRebuildIndex(ctx context.Context, args []string) error {
 	return store.RebuildRetrievalIndex(ctx)
 }
 
+func runPolicyAdd(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("policy-add", flag.ContinueOnError)
+	effect := fs.String("effect", "", "allow or deny")
+	principal := fs.String("principal", "", "caller principal or *")
+	operation := fs.String("operation", "read", "protected operation")
+	namespace := fs.String("namespace", "", "bound namespace")
+	selector := fs.String("selector", "{}", "resource selector JSON")
+	conditions := fs.String("conditions", "{}", "conditions JSON")
+	expiresAt := fs.String("expires-at", "", "RFC3339 expiry")
+	actor := fs.String("actor", "", "policy author")
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: trace policy-add [flags] FILE")
+	}
+	expires, err := parseOptionalTime(*expiresAt)
+	if err != nil {
+		return fmt.Errorf("expires-at: %w", err)
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), false)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	policy, err := store.AddPolicy(ctx, model.PolicyInput{
+		Effect:           *effect,
+		Principal:        *principal,
+		Operation:        *operation,
+		Namespace:        *namespace,
+		ResourceSelector: json.RawMessage(*selector),
+		Conditions:       json.RawMessage(*conditions),
+		ExpiresAt:        expires,
+		Actor:            *actor,
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(policy)
+	}
+	fmt.Printf("policy: %s\n", policy.ID)
+	return nil
+}
+
+func runForget(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("forget", flag.ContinueOnError)
+	mode := fs.String("mode", "dependency_closure", "dependency_closure, target_only, dependency_closure_redact, or target_only_redact")
+	actor := fs.String("actor", "", "caller and actor principal")
+	purpose := fs.String("purpose", "", "forget purpose")
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return errors.New("usage: trace forget [flags] FILE RECORD_ID")
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), false)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	deletions, err := store.Forget(ctx, model.ForgetRequest{
+		TargetID: fs.Arg(1),
+		Mode:     *mode,
+		Actor:    *actor,
+		Access: model.AccessContext{
+			Principal: *actor,
+			Purpose:   *purpose,
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(deletions)
+	}
+	fmt.Printf("forgotten: %d\n", len(deletions))
+	return nil
+}
+
 func runHistory(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("history", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	caller := fs.String("caller", "", "caller principal for policy evaluation")
+	purpose := fs.String("purpose", "", "access purpose for policy evaluation")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -439,7 +549,15 @@ func runHistory(ctx context.Context, args []string) error {
 		return err
 	}
 	defer store.Close()
-	history, err := store.History(ctx, targetID)
+	var history []model.Mutation
+	if *caller == "" {
+		history, err = store.History(ctx, targetID)
+	} else {
+		history, err = store.HistoryAuthorized(ctx, targetID, model.AccessContext{
+			Principal: *caller,
+			Purpose:   *purpose,
+		})
+	}
 	if err != nil {
 		return err
 	}
@@ -455,6 +573,8 @@ func runHistory(ctx context.Context, args []string) error {
 func runExplain(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("explain", flag.ContinueOnError)
 	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	caller := fs.String("caller", "", "caller principal for policy evaluation")
+	purpose := fs.String("purpose", "", "access purpose for policy evaluation")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -466,7 +586,15 @@ func runExplain(ctx context.Context, args []string) error {
 		return err
 	}
 	defer store.Close()
-	explanation, err := store.Explain(ctx, fs.Arg(1))
+	var explanation model.Explanation
+	if *caller == "" {
+		explanation, err = store.Explain(ctx, fs.Arg(1))
+	} else {
+		explanation, err = store.ExplainAuthorized(ctx, fs.Arg(1), model.AccessContext{
+			Principal: *caller,
+			Purpose:   *purpose,
+		})
+	}
 	if err != nil {
 		return err
 	}

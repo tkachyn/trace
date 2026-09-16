@@ -494,6 +494,173 @@ func TestDeterministicRetrievalAndContextCompilation(t *testing.T) {
 	}
 }
 
+func TestPolicyAuthorizationAndDependencyForget(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	allowRead := model.PolicyInput{
+		Effect:    model.PolicyAllow,
+		Principal: "agent:alice",
+		Operation: model.OperationRead,
+		Namespace: "user:tim",
+		Actor:     "admin",
+	}
+	if _, err := store.AddPolicy(ctx, allowRead); err != nil {
+		t.Fatalf("add read policy: %v", err)
+	}
+	allowForget := model.PolicyInput{
+		Effect:    model.PolicyAllow,
+		Principal: "admin",
+		Operation: model.OperationForget,
+		Namespace: "user:tim",
+		Actor:     "admin",
+	}
+	if _, err := store.AddPolicy(ctx, allowForget); err != nil {
+		t.Fatalf("add forget policy: %v", err)
+	}
+
+	event, err := store.AddEvent(ctx, model.EventInput{
+		EventType: "conversation.message",
+		Payload:   json.RawMessage(`{"content":"private source"}`),
+		Namespace: "user:tim",
+	})
+	if err != nil {
+		t.Fatalf("add source event: %v", err)
+	}
+	memory, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:        "fact",
+		Content:     "private fact",
+		Namespace:   "user:tim",
+		DerivedFrom: []string{event.ID},
+	})
+	if err != nil {
+		t.Fatalf("add source memory: %v", err)
+	}
+	observation, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:        "observation",
+		Content:     "private observation",
+		Namespace:   "user:tim",
+		DerivedFrom: []string{memory.ID},
+	})
+	if err != nil {
+		t.Fatalf("add observation: %v", err)
+	}
+
+	if _, err := store.GetMemoryAuthorized(ctx, memory.ID, model.AccessContext{
+		Principal: "agent:alice",
+	}); err != nil {
+		t.Fatalf("authorized memory read: %v", err)
+	}
+	if _, err := store.GetMemoryAuthorized(ctx, memory.ID, model.AccessContext{
+		Principal: "agent:bob",
+	}); err == nil {
+		t.Fatal("unauthorized memory read was accepted")
+	}
+	if _, err := store.AddPolicy(ctx, model.PolicyInput{
+		Effect:           model.PolicyDeny,
+		Principal:        "agent:alice",
+		Operation:        model.OperationRead,
+		Namespace:        "user:tim",
+		ResourceSelector: json.RawMessage(`{"id":"` + memory.ID + `"}`),
+		Actor:            "admin",
+	}); err != nil {
+		t.Fatalf("add deny policy: %v", err)
+	}
+	if _, err := store.GetMemoryAuthorized(ctx, memory.ID, model.AccessContext{
+		Principal: "agent:alice",
+	}); err == nil {
+		t.Fatal("deny policy did not override allow policy")
+	}
+
+	deletions, err := store.Forget(ctx, model.ForgetRequest{
+		TargetID: event.ID,
+		Actor:    "admin",
+		Access: model.AccessContext{
+			Principal: "admin",
+		},
+	})
+	if err != nil {
+		t.Fatalf("forget dependency closure: %v", err)
+	}
+	if len(deletions) != 3 {
+		t.Fatalf("deletions = %d, want event, memory, and observation", len(deletions))
+	}
+	if _, err := store.GetEvent(ctx, event.ID); err == nil {
+		t.Fatal("forgotten event is still readable")
+	}
+	if _, err := store.GetMemory(ctx, memory.ID); err == nil {
+		t.Fatal("forgotten memory is still readable")
+	}
+	if _, err := store.GetMemory(ctx, observation.ID); err == nil {
+		t.Fatal("forgotten observation is still readable")
+	}
+	repeated, err := store.Forget(ctx, model.ForgetRequest{
+		TargetID: event.ID,
+		Actor:    "admin",
+		Access: model.AccessContext{
+			Principal: "admin",
+		},
+	})
+	if err != nil {
+		t.Fatalf("repeat forget: %v", err)
+	}
+	if len(repeated) != 1 || repeated[0].TargetID != event.ID {
+		t.Fatalf("repeat forget result = %#v", repeated)
+	}
+	report, err := store.Validate(ctx)
+	if err != nil {
+		t.Fatalf("validate after forget: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("validation after forget: %v", report.Errors)
+	}
+}
+
+func TestRedactionRemovesPayloadAndKeepsRecordIdentity(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	if _, err := store.AddPolicy(ctx, model.PolicyInput{
+		Effect:    model.PolicyAllow,
+		Principal: "admin",
+		Operation: model.OperationForget,
+		Namespace: "user:tim",
+		Actor:     "admin",
+	}); err != nil {
+		t.Fatalf("add forget policy: %v", err)
+	}
+	memory, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:      "fact",
+		Content:   "private preference",
+		Namespace: "user:tim",
+	})
+	if err != nil {
+		t.Fatalf("add memory: %v", err)
+	}
+	if _, err := store.Forget(ctx, model.ForgetRequest{
+		TargetID: memory.ID,
+		Mode:     "target_only_redact",
+		Actor:    "admin",
+		Access:   model.AccessContext{Principal: "admin"},
+	}); err != nil {
+		t.Fatalf("redact memory: %v", err)
+	}
+	redacted, err := store.GetMemory(ctx, memory.ID)
+	if err != nil {
+		t.Fatalf("read redacted memory: %v", err)
+	}
+	if redacted.Content != "" || redacted.Status != "redacted" {
+		t.Fatalf("redacted memory = %#v", redacted)
+	}
+	result, err := store.Search(ctx, model.RetrievalQuery{
+		Text: "private preference",
+	})
+	if err != nil {
+		t.Fatalf("search redacted memory: %v", err)
+	}
+	if len(result.Hits) != 0 {
+		t.Fatalf("redacted search hits = %#v, want none", result.Hits)
+	}
+}
+
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
 	ctx := context.Background()
