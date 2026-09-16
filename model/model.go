@@ -204,6 +204,8 @@ type ScoreBreakdown struct {
 	TextMatch       float64
 	MetadataMatch   float64
 	TemporalMatch   float64
+	SemanticMatch   float64
+	Relationship    float64
 	Recency         float64
 	ConflictPenalty float64
 	Total           float64
@@ -239,6 +241,67 @@ type RetrievalResult struct {
 	Snapshot      Snapshot
 	Context       ContextResult
 	Warnings      []string
+}
+
+// EmbeddingSpec identifies an optional semantic index implementation
+type EmbeddingSpec struct {
+	Model          string
+	Dimensions     int
+	Revision       string
+	AdapterVersion string
+}
+
+// IndexStatus describes semantic index compatibility and freshness
+type IndexStatus struct {
+	Available       bool
+	Ready           bool
+	Stale           bool
+	Model           string
+	Dimensions      int
+	Revision        string
+	AdapterVersion  string
+	BuildSequence   int64
+	CurrentSequence int64
+	RecordCount     int
+	Warning         string
+}
+
+// HybridQuery combines deterministic retrieval with optional semantic ranking
+type HybridQuery struct {
+	RetrievalQuery
+	SemanticWeight float64
+	Access         AccessContext
+}
+
+// EntityQuery defines exact entity name and alias lookup filters
+type EntityQuery struct {
+	Text      string
+	Namespace string
+	Limit     int
+	Access    AccessContext
+}
+
+// RelationshipQuery defines bounded traversal over explicit derivation edges
+type RelationshipQuery struct {
+	StartIDs  []string
+	Relations []string
+	Direction string
+	MaxHops   int
+	Namespace string
+	Limit     int
+	Access    AccessContext
+}
+
+// RelationshipEdge describes one traversed canonical derivation
+type RelationshipEdge struct {
+	Derivation Derivation
+	Hops       int
+}
+
+// RelationshipResult contains deterministic bounded graph traversal results
+type RelationshipResult struct {
+	Records []RecordReference
+	Edges   []RelationshipEdge
 }
 
 // AccessContext identifies the caller and purpose for a protected operation

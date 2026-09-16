@@ -559,7 +559,8 @@ func assignRetrievalScores(hits []model.RetrievalHit, conflictingIDs map[string]
 			score.Recency = 0.05
 		}
 		score.Total = score.ExactMatch + score.TextMatch + score.MetadataMatch +
-			score.TemporalMatch + score.Recency - score.ConflictPenalty
+			score.TemporalMatch + score.SemanticMatch + score.Relationship +
+			score.Recency - score.ConflictPenalty
 	}
 }
 

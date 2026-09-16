@@ -282,6 +282,9 @@ func tombstoneRecord(ctx context.Context, tx *sql.Tx, id string) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM retrieval_fts WHERE record_id = ?", id); err != nil {
 		return fmt.Errorf("remove retrieval document: %w", err)
 	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM semantic_index WHERE record_id = ?", id); err != nil {
+		return fmt.Errorf("remove semantic document: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `
 		DELETE FROM derivation WHERE source_id = ? OR target_id = ?
 	`, id, id); err != nil {
@@ -303,6 +306,9 @@ func replaceRetrievalDocument(
 ) error {
 	if _, err := tx.ExecContext(ctx, "DELETE FROM retrieval_fts WHERE record_id = ?", record.id); err != nil {
 		return fmt.Errorf("remove retrieval document: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM semantic_index WHERE record_id = ?", record.id); err != nil {
+		return fmt.Errorf("remove semantic document: %w", err)
 	}
 	return insertRetrievalDocument(
 		ctx,

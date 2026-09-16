@@ -154,6 +154,29 @@ CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_fts USING fts5(
     content_hash UNINDEXED
 );
 
+CREATE TABLE IF NOT EXISTS semantic_index_meta (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    model TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    revision TEXT NOT NULL,
+    adapter_version TEXT NOT NULL,
+    build_sequence INTEGER NOT NULL,
+    built_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS semantic_index (
+    record_id TEXT PRIMARY KEY,
+    record_kind TEXT NOT NULL,
+    namespace TEXT NOT NULL,
+    model TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    revision TEXT NOT NULL,
+    adapter_version TEXT NOT NULL,
+    source_content_hash TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    build_sequence INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS event_namespace_recorded_at
     ON event (namespace, recorded_at);
 CREATE INDEX IF NOT EXISTS memory_namespace_recorded_at
@@ -164,6 +187,10 @@ CREATE INDEX IF NOT EXISTS derivation_source
     ON derivation (source_id);
 CREATE INDEX IF NOT EXISTS derivation_target
     ON derivation (target_id);
+CREATE INDEX IF NOT EXISTS derivation_source_relation_target
+    ON derivation (source_id, relation, target_id);
+CREATE INDEX IF NOT EXISTS derivation_target_relation_source
+    ON derivation (target_id, relation, source_id);
 `
 
 // createSchema applies the initial schema in one transaction

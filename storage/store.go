@@ -144,6 +144,10 @@ func Open(ctx context.Context, path string, readOnly bool) (*Store, error) {
 			db.Close()
 			return nil, err
 		}
+		if err := ensureSemanticIndex(ctx, db); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return store, nil
 }
