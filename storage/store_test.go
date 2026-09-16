@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -733,6 +734,125 @@ func TestAtomicBatchIngestion(t *testing.T) {
 	}
 	if after.Counts["memory"] != inspection.Counts["memory"] {
 		t.Fatalf("memory count after rejected batch = %d, want %d", after.Counts["memory"], inspection.Counts["memory"])
+	}
+}
+
+type testEmbeddingProvider struct{}
+
+func (testEmbeddingProvider) Spec() model.EmbeddingSpec {
+	return model.EmbeddingSpec{
+		Model:          "test-embedding",
+		Dimensions:     2,
+		Revision:       "1",
+		AdapterVersion: "test",
+	}
+}
+
+func (testEmbeddingProvider) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	vectors := make([][]float32, len(texts))
+	for index, text := range texts {
+		if strings.Contains(strings.ToLower(text), "python") {
+			vectors[index] = []float32{0, 1}
+		} else {
+			vectors[index] = []float32{1, 0}
+		}
+	}
+	return vectors, nil
+}
+
+func TestSemanticIndexRelationshipsAndEntityLookup(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	first, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:      "fact",
+		Content:   "Tim prefers Go",
+		Namespace: "user:tim",
+	})
+	if err != nil {
+		t.Fatalf("add Go memory: %v", err)
+	}
+	second, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:      "fact",
+		Content:   "Tim uses Python",
+		Namespace: "user:tim",
+	})
+	if err != nil {
+		t.Fatalf("add Python memory: %v", err)
+	}
+	entity, err := store.AddEntity(ctx, model.EntityInput{
+		EntityType:    "person",
+		CanonicalName: "Tim",
+		Aliases:       json.RawMessage(`["Timothy"]`),
+		Namespace:     "user:tim",
+	})
+	if err != nil {
+		t.Fatalf("add entity: %v", err)
+	}
+	relation, err := store.AddRelation(ctx, model.RelationInput{
+		SourceID: first.ID,
+		TargetID: second.ID,
+		Relation: model.RelationSupports,
+	})
+	if err != nil {
+		t.Fatalf("add relation: %v", err)
+	}
+	if err := store.RebuildSemanticIndex(ctx, testEmbeddingProvider{}); err != nil {
+		t.Fatalf("rebuild semantic index: %v", err)
+	}
+	status, err := store.SemanticIndexStatus(ctx)
+	if err != nil {
+		t.Fatalf("semantic status: %v", err)
+	}
+	if !status.Ready || status.RecordCount != 2 {
+		t.Fatalf("semantic status = %#v, want ready with two records", status)
+	}
+	result, err := store.SearchHybrid(ctx, model.HybridQuery{
+		RetrievalQuery: model.RetrievalQuery{
+			Text:      "prefers Go",
+			Namespace: "user:tim",
+		},
+	}, testEmbeddingProvider{})
+	if err != nil {
+		t.Fatalf("hybrid search: %v", err)
+	}
+	if len(result.Hits) != 2 || result.Hits[0].ID != first.ID {
+		t.Fatalf("hybrid hits = %#v, want Go first and Python second", result.Hits)
+	}
+	if result.Hits[0].Score.SemanticMatch == 0 {
+		t.Fatalf("hybrid score = %#v, want semantic component", result.Hits[0].Score)
+	}
+	entities, err := store.LookupEntities(ctx, model.EntityQuery{Text: "Timothy"})
+	if err != nil {
+		t.Fatalf("lookup entity alias: %v", err)
+	}
+	if len(entities) != 1 || entities[0].ID != entity.ID {
+		t.Fatalf("entity alias results = %#v, want Tim", entities)
+	}
+	traversal, err := store.Traverse(ctx, model.RelationshipQuery{
+		StartIDs:  []string{first.ID},
+		Relations: []string{model.RelationSupports},
+		MaxHops:   1,
+	})
+	if err != nil {
+		t.Fatalf("traverse relationship: %v", err)
+	}
+	if len(traversal.Records) != 1 || traversal.Records[0].ID != second.ID ||
+		len(traversal.Edges) != 1 || traversal.Edges[0].Derivation.ID != relation.ID {
+		t.Fatalf("traversal = %#v, want one support edge", traversal)
+	}
+	if _, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:      "fact",
+		Content:   "new memory",
+		Namespace: "user:tim",
+	}); err != nil {
+		t.Fatalf("add stale memory: %v", err)
+	}
+	status, err = store.SemanticIndexStatus(ctx)
+	if err != nil {
+		t.Fatalf("stale semantic status: %v", err)
+	}
+	if !status.Stale || status.Ready {
+		t.Fatalf("stale semantic status = %#v, want stale", status)
 	}
 }
 

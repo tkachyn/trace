@@ -2103,6 +2103,8 @@ A native Python SDK should wait until the Go API has conformance tests.
 
 ### Phase 6: optional semantic and relationship indexes
 
+Status: implemented in the Go core
+
 Deliverables:
 
 - embedding index adapter
@@ -2111,6 +2113,18 @@ Deliverables:
 - relationship traversal
 - hybrid candidate generation
 - adapter-specific benchmarks
+
+Implementation decisions:
+
+- embeddings are supplied by a provider interface and stored only in a
+  rebuildable semantic index
+- semantic rows carry model, dimensions, revision, adapter version, source
+  content hash, and build sequence metadata
+- stale or incompatible semantic indexes fall back to exact and full-text
+  retrieval with a warning
+- entity lookup uses canonical names and JSON aliases
+- relationship traversal uses bounded breadth-first search over `derivation`
+  and applies deterministic ordering and optional policy filtering
 
 Exit criteria:
 

@@ -26,7 +26,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|search|rebuild-index|policy-add|forget|ingest|history|explain|diff> ...")
+		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|search|rebuild-index|semantic-status|entity-lookup|traverse|policy-add|forget|ingest|history|explain|diff> ...")
 	}
 
 	switch args[0] {
@@ -46,6 +46,12 @@ func run(ctx context.Context, args []string) error {
 		return runSearch(ctx, args[1:])
 	case "rebuild-index":
 		return runRebuildIndex(ctx, args[1:])
+	case "semantic-status":
+		return runSemanticStatus(ctx, args[1:])
+	case "entity-lookup":
+		return runEntityLookup(ctx, args[1:])
+	case "traverse":
+		return runTraverse(ctx, args[1:])
 	case "policy-add":
 		return runPolicyAdd(ctx, args[1:])
 	case "forget":
@@ -449,6 +455,110 @@ func runRebuildIndex(ctx context.Context, args []string) error {
 	}
 	defer store.Close()
 	return store.RebuildRetrievalIndex(ctx)
+}
+
+func runSemanticStatus(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("semantic-status", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: trace semantic-status [--json] FILE")
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	status, err := store.SemanticIndexStatus(ctx)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(status)
+	}
+	fmt.Printf("available: %t\n", status.Available)
+	fmt.Printf("ready: %t\n", status.Ready)
+	fmt.Printf("stale: %t\n", status.Stale)
+	fmt.Printf("records: %d\n", status.RecordCount)
+	if status.Warning != "" {
+		fmt.Printf("warning: %s\n", status.Warning)
+	}
+	return nil
+}
+
+func runEntityLookup(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("entity-lookup", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	text := fs.String("text", "", "canonical name or alias")
+	namespace := fs.String("namespace", "", "namespace filter")
+	limit := fs.Int("limit", 100, "maximum number of entities")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: trace entity-lookup [flags] FILE")
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	entities, err := store.LookupEntities(ctx, model.EntityQuery{
+		Text:      *text,
+		Namespace: *namespace,
+		Limit:     *limit,
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(entities)
+	}
+	for _, entity := range entities {
+		fmt.Printf("%s [%s] %s\n", entity.ID, entity.EntityType, entity.CanonicalName)
+	}
+	return nil
+}
+
+func runTraverse(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("traverse", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	start := fs.String("start", "", "comma-separated start record IDs")
+	relations := fs.String("relations", "", "comma-separated relation filters")
+	direction := fs.String("direction", "outgoing", "outgoing, incoming, or both")
+	maxHops := fs.Int("max-hops", 1, "maximum traversal hops")
+	namespace := fs.String("namespace", "", "namespace filter")
+	limit := fs.Int("limit", 100, "maximum number of records")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: trace traverse [flags] FILE")
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	result, err := store.Traverse(ctx, model.RelationshipQuery{
+		StartIDs:  splitCSV(*start),
+		Relations: splitCSV(*relations),
+		Direction: *direction,
+		MaxHops:   *maxHops,
+		Namespace: *namespace,
+		Limit:     *limit,
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(result)
+	}
+	fmt.Printf("records: %d\n", len(result.Records))
+	fmt.Printf("edges: %d\n", len(result.Edges))
+	return nil
 }
 
 func runPolicyAdd(ctx context.Context, args []string) error {
