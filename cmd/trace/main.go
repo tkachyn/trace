@@ -8,10 +8,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
 
+	"trace/api"
 	"trace/format"
 	"trace/model"
 	"trace/storage"
@@ -26,7 +28,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|search|rebuild-index|semantic-status|entity-lookup|traverse|policy-add|forget|ingest|history|explain|diff> ...")
+		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|search|rebuild-index|semantic-status|entity-lookup|traverse|policy-add|forget|ingest|serve|history|explain|diff> ...")
 	}
 
 	switch args[0] {
@@ -58,6 +60,8 @@ func run(ctx context.Context, args []string) error {
 		return runForget(ctx, args[1:])
 	case "ingest":
 		return runIngest(ctx, args[1:])
+	case "serve":
+		return runServe(ctx, args[1:])
 	case "history":
 		return runHistory(ctx, args[1:])
 	case "explain":
@@ -698,6 +702,27 @@ func runIngest(ctx context.Context, args []string) error {
 		return errors.New("trace ingest rejected")
 	}
 	return nil
+}
+
+func runServe(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	listen := fs.String("listen", "127.0.0.1:8080", "loopback listen address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: trace serve [--listen HOST:PORT] FILE")
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), false)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	server := &http.Server{
+		Addr:    *listen,
+		Handler: api.NewServer(store),
+	}
+	return server.ListenAndServe()
 }
 
 func runHistory(ctx context.Context, args []string) error {
