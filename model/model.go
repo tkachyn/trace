@@ -27,6 +27,15 @@ const (
 	RelationSupersedes  = "supersedes"
 	RelationInvalidates = "invalidates"
 	RelationSummarizes  = "summarizes"
+
+	PolicyAllow = "allow"
+	PolicyDeny  = "deny"
+
+	OperationRead    = "read"
+	OperationSearch  = "search"
+	OperationExplain = "explain"
+	OperationHistory = "history"
+	OperationForget  = "forget"
 )
 
 // manifest describes the file format and schema used by a Trace file
@@ -230,6 +239,56 @@ type RetrievalResult struct {
 	Snapshot      Snapshot
 	Context       ContextResult
 	Warnings      []string
+}
+
+// AccessContext identifies the caller and purpose for a protected operation
+type AccessContext struct {
+	Principal string
+	Purpose   string
+	At        time.Time
+}
+
+// Policy describes one allow or deny rule for a namespace binding
+type Policy struct {
+	ID               string
+	Effect           string
+	Principal        string
+	Operation        string
+	ResourceSelector json.RawMessage
+	Conditions       json.RawMessage
+	CreatedAt        time.Time
+	ExpiresAt        *time.Time
+}
+
+// PolicyInput contains the caller-provided fields for a policy
+type PolicyInput struct {
+	ID               string
+	Effect           string
+	Principal        string
+	Operation        string
+	Namespace        string
+	ResourceSelector json.RawMessage
+	Conditions       json.RawMessage
+	ExpiresAt        *time.Time
+	Actor            string
+}
+
+// ForgetRequest describes a transactional logical deletion
+type ForgetRequest struct {
+	TargetID string
+	Mode     string
+	Actor    string
+	Access   AccessContext
+}
+
+// Deletion records the logical deletion or redaction of a record
+type Deletion struct {
+	ID        string
+	TargetID  string
+	Mode      string
+	Actor     string
+	CreatedAt time.Time
+	Details   json.RawMessage
 }
 
 // snapshot identifies a logical point in the append-only mutation history

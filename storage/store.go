@@ -687,6 +687,12 @@ func (s *Store) Validate(ctx context.Context) (ValidationReport, error) {
 	if err := s.validateDerivations(ctx, &report); err != nil {
 		return report, err
 	}
+	if err := s.validatePolicies(ctx, &report); err != nil {
+		return report, err
+	}
+	if err := s.validateDeletions(ctx, &report); err != nil {
+		return report, err
+	}
 
 	report.Valid = len(report.Errors) == 0
 	return report, nil
@@ -1032,6 +1038,89 @@ func (s *Store) validateDerivations(ctx context.Context, report *ValidationRepor
 		}
 	}
 	return nil
+}
+
+func (s *Store) validatePolicies(ctx context.Context, report *ValidationReport) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, effect, principal, operation, resource_selector, conditions,
+		       created_at, expires_at
+		FROM policy
+	`)
+	if err != nil {
+		return fmt.Errorf("query policies for validation: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, effect, principal, operation, selector, conditions, createdAt string
+		var expiresAt sql.NullString
+		if err := rows.Scan(
+			&id,
+			&effect,
+			&principal,
+			&operation,
+			&selector,
+			&conditions,
+			&createdAt,
+			&expiresAt,
+		); err != nil {
+			return fmt.Errorf("scan policy for validation: %w", err)
+		}
+		if effect != model.PolicyAllow && effect != model.PolicyDeny {
+			report.Errors = append(report.Errors, fmt.Sprintf("policy %s has invalid effect", id))
+		}
+		if principal == "" || operation == "" {
+			report.Errors = append(report.Errors, fmt.Sprintf("policy %s is missing required fields", id))
+		}
+		if err := model.ValidateJSON(json.RawMessage(selector)); err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("policy %s has invalid selector", id))
+		}
+		if err := model.ValidateJSON(json.RawMessage(conditions)); err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("policy %s has invalid conditions", id))
+		}
+		if _, err := model.ParseTime(createdAt); err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("policy %s has invalid created_at", id))
+		}
+		if expiresAt.Valid {
+			if _, err := model.ParseTime(expiresAt.String); err != nil {
+				report.Errors = append(report.Errors, fmt.Sprintf("policy %s has invalid expires_at", id))
+			}
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Store) validateDeletions(ctx context.Context, report *ValidationReport) error {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, target_id, mode, actor, created_at, details
+		FROM deletion
+	`)
+	if err != nil {
+		return fmt.Errorf("query deletions for validation: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, targetID, mode, actor, createdAt, details string
+		if err := rows.Scan(
+			&id,
+			&targetID,
+			&mode,
+			&actor,
+			&createdAt,
+			&details,
+		); err != nil {
+			return fmt.Errorf("scan deletion for validation: %w", err)
+		}
+		if targetID == "" || actor == "" || mode == "" {
+			report.Errors = append(report.Errors, fmt.Sprintf("deletion %s has missing fields", id))
+		}
+		if err := model.ValidateJSON(json.RawMessage(details)); err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("deletion %s has invalid details", id))
+		}
+		if _, err := model.ParseTime(createdAt); err != nil {
+			report.Errors = append(report.Errors, fmt.Sprintf("deletion %s has invalid created_at", id))
+		}
+	}
+	return rows.Err()
 }
 
 // openDatabase configures connection-local safety settings only
