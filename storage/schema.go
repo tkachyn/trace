@@ -146,6 +146,14 @@ CREATE TABLE IF NOT EXISTS deletion (
     details TEXT NOT NULL
 );
 
+CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_fts USING fts5(
+    record_id UNINDEXED,
+    record_kind UNINDEXED,
+    namespace UNINDEXED,
+    content,
+    content_hash UNINDEXED
+);
+
 CREATE INDEX IF NOT EXISTS event_namespace_recorded_at
     ON event (namespace, recorded_at);
 CREATE INDEX IF NOT EXISTS memory_namespace_recorded_at

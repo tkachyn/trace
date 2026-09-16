@@ -166,6 +166,72 @@ type QueryResult struct {
 	EvidenceState string
 }
 
+// retrievalQuery defines deterministic local retrieval filters and ranking inputs
+type RetrievalQuery struct {
+	Text               string
+	ExactIDs           []string
+	ContentHash        string
+	Namespace          string
+	NamespaceScope     []string
+	Kind               string
+	SubjectEntityID    string
+	Predicate          string
+	ObjectValue        string
+	ValidAt            *time.Time
+	RecordedBefore     *time.Time
+	RecordedAfter      *time.Time
+	IncludeSuperseded  bool
+	IncludeInvalidated bool
+	IncludeRedacted    bool
+	MinimumScore       float64
+	Strict             bool
+	Limit              int
+	ContextByteLimit   int
+}
+
+// scoreBreakdown explains the deterministic components of one retrieval score
+type ScoreBreakdown struct {
+	ExactMatch      float64
+	TextMatch       float64
+	MetadataMatch   float64
+	TemporalMatch   float64
+	Recency         float64
+	ConflictPenalty float64
+	Total           float64
+}
+
+// RetrievalHit identifies one authorized canonical record returned by retrieval
+type RetrievalHit struct {
+	ID            string
+	Kind          string
+	Namespace     string
+	Content       string
+	ContentHash   string
+	Memory        *Memory
+	Event         *Event
+	Score         ScoreBreakdown
+	EvidenceState string
+}
+
+// ContextResult contains a reproducible presentation of retrieval evidence
+type ContextResult struct {
+	Snapshot  Snapshot
+	HitIDs    []string
+	Content   string
+	Bytes     int
+	Truncated bool
+}
+
+// RetrievalResult contains ranked evidence, conflicts, and compiled context
+type RetrievalResult struct {
+	Hits          []RetrievalHit
+	Conflicts     []ConflictGroup
+	EvidenceState string
+	Snapshot      Snapshot
+	Context       ContextResult
+	Warnings      []string
+}
+
 // snapshot identifies a logical point in the append-only mutation history
 type Snapshot struct {
 	Sequence  int64

@@ -140,6 +140,10 @@ func Open(ctx context.Context, path string, readOnly bool) (*Store, error) {
 			db.Close()
 			return nil, err
 		}
+		if err := ensureRetrievalIndex(ctx, db); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return store, nil
 }
@@ -242,6 +246,17 @@ func (s *Store) AddEvent(ctx context.Context, input model.EventInput) (model.Eve
 		string(event.Extensions),
 	); err != nil {
 		return model.Event{}, fmt.Errorf("insert event: %w", err)
+	}
+	if err := insertRetrievalDocument(
+		ctx,
+		tx,
+		event.ID,
+		"event",
+		event.Namespace,
+		string(event.Payload),
+		event.ContentHash,
+	); err != nil {
+		return model.Event{}, err
 	}
 	if _, err := insertMutation(ctx, tx, "add_event", event.ID, event.Actor, event.ContentHash); err != nil {
 		return model.Event{}, err
@@ -382,6 +397,17 @@ func (s *Store) AddMemory(ctx context.Context, input model.MemoryInput) (model.M
 		string(memory.Extensions),
 	); err != nil {
 		return model.Memory{}, fmt.Errorf("insert memory: %w", err)
+	}
+	if err := insertRetrievalDocument(
+		ctx,
+		tx,
+		memory.ID,
+		"memory",
+		memory.Namespace,
+		memory.Content+" "+string(memory.StructuredValue),
+		memory.ContentHash,
+	); err != nil {
+		return model.Memory{}, err
 	}
 	for _, sourceID := range input.DerivedFrom {
 		derivationID, err := model.NewID()
