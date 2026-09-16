@@ -2137,6 +2137,8 @@ No embedding provider becomes mandatory in this phase.
 
 ### Phase 7: public API and one SDK
 
+Status: implemented in the Go core and Python integration package
+
 Deliverables:
 
 - versioned local JSON API or HTTP API
@@ -2144,6 +2146,17 @@ Deliverables:
 - one supported Python SDK
 - API compatibility tests
 - examples for Go and Python callers
+
+Implementation decisions:
+
+- the public API is a loopback-only standard-library HTTP adapter under `/v1`
+  and delegates semantics to the Go storage core
+- protected reads require an explicit principal and preserve the direct API
+  authorization behavior
+- API failures use stable categories for protocol, unauthorized, conflict,
+  reference, validation, and storage errors
+- the Python SDK uses `urllib.request` and returns the same JSON shapes without
+  opening `.trc` files directly
 
 Exit criteria:
 
