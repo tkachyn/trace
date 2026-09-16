@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"trace/format"
 	"trace/model"
 )
 
@@ -658,6 +659,80 @@ func TestRedactionRemovesPayloadAndKeepsRecordIdentity(t *testing.T) {
 	}
 	if len(result.Hits) != 0 {
 		t.Fatalf("redacted search hits = %#v, want none", result.Hits)
+	}
+}
+
+func TestAtomicBatchIngestion(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	request := format.BatchRequest{
+		Protocol:  format.BatchProtocol,
+		Version:   format.ProtocolVersion,
+		RequestID: "batch-1",
+		Actor:     "agent:extractor",
+		Events: []format.EventProposal{{
+			ClientID:   "event-1",
+			EventType:  "conversation.message",
+			Payload:    json.RawMessage(`{"content":"I prefer Go"}`),
+			Namespace:  "user:tim",
+			RecordedAt: "2026-09-15T19:00:00Z",
+		}},
+		Memories: []format.MemoryProposal{{
+			ClientID:    "memory-1",
+			Kind:        "fact",
+			Content:     "Tim prefers Go",
+			Namespace:   "user:tim",
+			RecordedAt:  "2026-09-15T19:00:00Z",
+			DerivedFrom: []string{"event-1"},
+		}},
+	}
+	result, err := store.IngestBatch(ctx, request)
+	if err != nil {
+		t.Fatalf("ingest batch: %v", err)
+	}
+	if len(result.Errors) != 0 || result.CommitID == "" {
+		t.Fatalf("batch result = %#v, want committed batch", result)
+	}
+	if len(result.Accepted) != 2 || result.IDMap["event-1"] == "" || result.IDMap["memory-1"] == "" {
+		t.Fatalf("batch IDs = %#v, want event and memory", result)
+	}
+	history, err := store.History(ctx, "")
+	if err != nil {
+		t.Fatalf("batch history: %v", err)
+	}
+	if len(history) != 2 || history[0].CommitID != result.CommitID || history[1].CommitID != result.CommitID {
+		t.Fatalf("batch history = %#v, want shared commit ID", history)
+	}
+
+	inspection, err := store.Inspect(ctx)
+	if err != nil {
+		t.Fatalf("inspect before rejected batch: %v", err)
+	}
+	rejected, err := store.IngestBatch(ctx, format.BatchRequest{
+		Protocol:  format.BatchProtocol,
+		Version:   format.ProtocolVersion,
+		RequestID: "batch-invalid",
+		Actor:     "agent:extractor",
+		Memories: []format.MemoryProposal{{
+			ClientID:    "invalid-memory",
+			Kind:        "fact",
+			Content:     "must not commit",
+			Namespace:   "user:tim",
+			DerivedFrom: []string{"missing-source"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("rejected batch: %v", err)
+	}
+	if len(rejected.Errors) != 1 || rejected.CommitID != "" {
+		t.Fatalf("rejected result = %#v, want one error and no commit", rejected)
+	}
+	after, err := store.Inspect(ctx)
+	if err != nil {
+		t.Fatalf("inspect after rejected batch: %v", err)
+	}
+	if after.Counts["memory"] != inspection.Counts["memory"] {
+		t.Fatalf("memory count after rejected batch = %d, want %d", after.Counts["memory"], inspection.Counts["memory"])
 	}
 }
 

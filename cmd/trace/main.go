@@ -7,10 +7,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
+	"trace/format"
 	"trace/model"
 	"trace/storage"
 )
@@ -24,7 +26,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|search|rebuild-index|policy-add|forget|history|explain|diff> ...")
+		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|search|rebuild-index|policy-add|forget|ingest|history|explain|diff> ...")
 	}
 
 	switch args[0] {
@@ -48,6 +50,8 @@ func run(ctx context.Context, args []string) error {
 		return runPolicyAdd(ctx, args[1:])
 	case "forget":
 		return runForget(ctx, args[1:])
+	case "ingest":
+		return runIngest(ctx, args[1:])
 	case "history":
 		return runHistory(ctx, args[1:])
 	case "explain":
@@ -526,6 +530,63 @@ func runForget(ctx context.Context, args []string) error {
 		return writeJSON(deletions)
 	}
 	fmt.Printf("forgotten: %d\n", len(deletions))
+	return nil
+}
+
+func runIngest(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("ingest", flag.ContinueOnError)
+	jsonl := fs.Bool("jsonl", false, "read the versioned JSONL batch protocol")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: trace ingest [--jsonl] FILE")
+	}
+	input, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("read ingest input: %w", err)
+	}
+	var request format.BatchRequest
+	if *jsonl {
+		request, err = format.DecodeJSONL(strings.NewReader(string(input)))
+	} else {
+		var envelope struct {
+			Protocol string `json:"protocol"`
+			Type     string `json:"type"`
+		}
+		if err := format.NormalizeJSON(input, &envelope); err != nil {
+			return fmt.Errorf("decode ingest input: %w", err)
+		}
+		if envelope.Type == format.ExtractionProtocol {
+			var proposal format.ExtractionProposal
+			if err := format.NormalizeJSON(input, &proposal); err != nil {
+				return fmt.Errorf("decode extraction proposal: %w", err)
+			}
+			request, err = proposal.ToBatchRequest()
+		} else {
+			if err := format.NormalizeJSON(input, &request); err != nil {
+				return fmt.Errorf("decode batch request: %w", err)
+			}
+		}
+	}
+	if err != nil {
+		return err
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), false)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	result, err := store.IngestBatch(ctx, request)
+	if err != nil {
+		return err
+	}
+	if err := writeJSON(result); err != nil {
+		return err
+	}
+	if len(result.Errors) > 0 {
+		return errors.New("trace ingest rejected")
+	}
 	return nil
 }
 

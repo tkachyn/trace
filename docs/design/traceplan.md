@@ -2066,6 +2066,8 @@ Exit criteria:
 
 ### Phase 5: Python integration layer
 
+Status: implemented in the Go core and Python integration package
+
 Deliverables:
 
 - Python extraction adapter
@@ -2073,6 +2075,19 @@ Deliverables:
 - Python benchmark runner
 - result analysis tools
 - batch ingestion through versioned Go JSON/JSONL operations
+
+Implementation decisions:
+
+- `trace.batch` is the versioned atomic ingestion contract, with JSON and
+  header/record/commit JSONL encodings
+- extraction proposals use proposal-local IDs that the Go core resolves to
+  canonical Trace IDs
+- one accepted batch uses one mutation commit ID and rolls back completely on
+  validation, reference, or storage failure
+- the Python package serializes proposals, invokes `trace ingest`, and records
+  benchmark results without opening SQLite or reimplementing Trace semantics
+- provider-specific fields remain in provenance, extensions, unmapped fields,
+  or benchmark metadata
 
 Exit criteria:
 
