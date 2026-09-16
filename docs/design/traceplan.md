@@ -1909,7 +1909,7 @@ by earlier phases.
 
 ### Phase 0: design and conformance baseline
 
-Status: design complete; implementation pending
+Status: complete
 
 Deliverables:
 
@@ -1930,6 +1930,8 @@ Exit criteria:
 - the design identifies what is canonical and what is rebuildable
 
 ### Phase 1: minimal Go `.trc` implementation
+
+Status: implemented in the Go core
 
 Deliverables:
 
@@ -1953,6 +1955,8 @@ Exit criteria:
 
 ### Phase 2: temporal memory and change history
 
+Status: implemented in the Go core
+
 Deliverables:
 
 - valid-time and recorded-time queries
@@ -1962,6 +1966,23 @@ Deliverables:
 - `trace diff`
 - deterministic `trace explain`
 - point-in-time fixture suite
+
+Implementation decisions:
+
+- valid-time queries use half-open intervals and exclude records without a
+  known start time
+- current queries default to the current instant and exclude superseded,
+  invalidated, and redacted records
+- historical point-in-time queries include superseded records when their
+  validity interval matches
+- recorded-time filters are independent of valid-time filters
+- explicit `contradicts`, `confirms`, and `supersedes` edges are append-only
+- contradictions remain visible as conflict groups until an explicit
+  supersession edge resolves them
+- mutation sequences provide logical snapshots without pretending to recreate
+  state that was never recorded
+- explanations are deterministic and include source records, provenance,
+  derivations, and related mutations
 
 Exit criteria:
 

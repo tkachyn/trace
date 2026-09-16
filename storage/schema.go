@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"trace/model"
 )
 
 // schema creates canonical tables and rebuildable lookup indexes
@@ -107,7 +109,8 @@ CREATE TABLE IF NOT EXISTS derivation (
 );
 
 CREATE TABLE IF NOT EXISTS mutation (
-    id TEXT PRIMARY KEY,
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    id TEXT NOT NULL UNIQUE,
     commit_id TEXT NOT NULL,
     operation TEXT NOT NULL,
     target_id TEXT NOT NULL,
@@ -166,7 +169,10 @@ func createSchema(ctx context.Context, db *sql.DB) error {
 	if _, err := tx.ExecContext(ctx, schema); err != nil {
 		return fmt.Errorf("create trace schema: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, "PRAGMA user_version = 1"); err != nil {
+	if _, err := tx.ExecContext(
+		ctx,
+		fmt.Sprintf("PRAGMA user_version = %d", model.SchemaVersion),
+	); err != nil {
 		return fmt.Errorf("set schema version: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

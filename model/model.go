@@ -16,9 +16,17 @@ import (
 const (
 	FormatName       = "trace"
 	FormatVersion    = "0.1"
-	SchemaVersion    = 1
+	SchemaVersion    = 2
 	ApplicationID    = 0x54524345
 	DefaultGenerator = "trace-go"
+
+	RelationDerivedFrom = "derived_from"
+	RelationSupports    = "supports"
+	RelationContradicts = "contradicts"
+	RelationConfirms    = "confirms"
+	RelationSupersedes  = "supersedes"
+	RelationInvalidates = "invalidates"
+	RelationSummarizes  = "summarizes"
 )
 
 // manifest describes the file format and schema used by a Trace file
@@ -111,6 +119,7 @@ type Derivation struct {
 
 // mutation records an accepted change at a transaction boundary
 type Mutation struct {
+	Sequence    int64
 	ID          string
 	CommitID    string
 	Operation   string
@@ -119,6 +128,77 @@ type Mutation struct {
 	CreatedAt   time.Time
 	RequestHash string
 	Metadata    json.RawMessage
+}
+
+// relationInput contains an explicit relationship between two records
+type RelationInput struct {
+	ID         string
+	SourceID   string
+	TargetID   string
+	Relation   string
+	Actor      string
+	Extensions json.RawMessage
+}
+
+// memoryQuery defines deterministic temporal and lifecycle filters
+type MemoryQuery struct {
+	Namespace          string
+	ValidAt            *time.Time
+	RecordedBefore     *time.Time
+	RecordedAfter      *time.Time
+	IncludeSuperseded  bool
+	IncludeInvalidated bool
+	IncludeRedacted    bool
+	Limit              int
+}
+
+// conflictGroup identifies contradictory records returned by a query
+type ConflictGroup struct {
+	MemoryIDs             []string
+	Resolved              bool
+	ResolutionRelationIDs []string
+}
+
+// queryResult contains temporal records and explicit conflict state
+type QueryResult struct {
+	Memories      []Memory
+	Conflicts     []ConflictGroup
+	EvidenceState string
+}
+
+// snapshot identifies a logical point in the append-only mutation history
+type Snapshot struct {
+	Sequence  int64
+	UpdatedAt time.Time
+}
+
+// diffResult reports accepted mutations between two snapshots
+type DiffResult struct {
+	From      Snapshot
+	To        Snapshot
+	Mutations []Mutation
+	Added     []RecordReference
+}
+
+// recordReference identifies a record without duplicating its full payload
+type RecordReference struct {
+	ID   string
+	Kind string
+}
+
+// explanation contains deterministic evidence for one record
+type Explanation struct {
+	TargetID       string
+	TargetKind     string
+	Event          *Event
+	Memory         *Memory
+	Entity         *Entity
+	SourceEvents   []Event
+	SourceMemories []Memory
+	SourceEntities []Entity
+	Provenance     []Provenance
+	Derivations    []Derivation
+	Mutations      []Mutation
 }
 
 // eventInput contains the caller-provided fields for a new event
@@ -367,6 +447,22 @@ func ValidateMemoryStatus(status string) error {
 		return nil
 	default:
 		return fmt.Errorf("unsupported memory status %q", status)
+	}
+}
+
+// validateRelation restricts lifecycle edges to known v0.1 semantics
+func ValidateRelation(relation string) error {
+	switch relation {
+	case RelationDerivedFrom,
+		RelationSupports,
+		RelationContradicts,
+		RelationConfirms,
+		RelationSupersedes,
+		RelationInvalidates,
+		RelationSummarizes:
+		return nil
+	default:
+		return fmt.Errorf("unsupported relation %q", relation)
 	}
 }
 

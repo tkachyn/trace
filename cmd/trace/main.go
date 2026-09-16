@@ -24,7 +24,7 @@ func main() {
 
 func run(ctx context.Context, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: trace <init|inspect|validate|add-event|remember> ...")
+		return errors.New("usage: trace <init|inspect|validate|add-event|remember|query|history|explain|diff> ...")
 	}
 
 	switch args[0] {
@@ -38,6 +38,14 @@ func run(ctx context.Context, args []string) error {
 		return runAddEvent(ctx, args[1:])
 	case "remember":
 		return runRemember(ctx, args[1:])
+	case "query":
+		return runQuery(ctx, args[1:])
+	case "history":
+		return runHistory(ctx, args[1:])
+	case "explain":
+		return runExplain(ctx, args[1:])
+	case "diff":
+		return runDiff(ctx, args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -250,6 +258,164 @@ func runRemember(ctx context.Context, args []string) error {
 		return err
 	}
 	return writeJSON(memory)
+}
+
+func runQuery(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("query", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	namespace := fs.String("namespace", "", "namespace filter")
+	validAt := fs.String("valid-at", "", "RFC3339 point-in-time filter")
+	recordedBefore := fs.String("recorded-before", "", "exclusive RFC3339 recorded-time filter")
+	recordedAfter := fs.String("recorded-after", "", "inclusive RFC3339 recorded-time filter")
+	includeSuperseded := fs.Bool("include-superseded", false, "include superseded memories")
+	includeInvalidated := fs.Bool("include-invalidated", false, "include invalidated memories")
+	includeRedacted := fs.Bool("include-redacted", false, "include redacted memories")
+	limit := fs.Int("limit", 100, "maximum number of memories")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: trace query [flags] FILE")
+	}
+	point, err := parseOptionalTime(*validAt)
+	if err != nil {
+		return fmt.Errorf("valid-at: %w", err)
+	}
+	before, err := parseOptionalTime(*recordedBefore)
+	if err != nil {
+		return fmt.Errorf("recorded-before: %w", err)
+	}
+	after, err := parseOptionalTime(*recordedAfter)
+	if err != nil {
+		return fmt.Errorf("recorded-after: %w", err)
+	}
+
+	store, err := storage.Open(ctx, fs.Arg(0), true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	result, err := store.QueryMemories(ctx, model.MemoryQuery{
+		Namespace:          *namespace,
+		ValidAt:            point,
+		RecordedBefore:     before,
+		RecordedAfter:      after,
+		IncludeSuperseded:  *includeSuperseded,
+		IncludeInvalidated: *includeInvalidated,
+		IncludeRedacted:    *includeRedacted,
+		Limit:              *limit,
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(result)
+	}
+	fmt.Printf("evidence: %s\n", result.EvidenceState)
+	fmt.Printf("memories: %d\n", len(result.Memories))
+	for _, memory := range result.Memories {
+		fmt.Printf("%s [%s] %s\n", memory.ID, memory.Status, memory.Content)
+	}
+	fmt.Printf("conflicts: %d\n", len(result.Conflicts))
+	return nil
+}
+
+func runHistory(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("history", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() < 1 || fs.NArg() > 2 {
+		return errors.New("usage: trace history [--json] FILE [RECORD_ID]")
+	}
+	targetID := ""
+	if fs.NArg() == 2 {
+		targetID = fs.Arg(1)
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	history, err := store.History(ctx, targetID)
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(history)
+	}
+	for _, mutation := range history {
+		fmt.Printf("%d %s %s %s\n", mutation.Sequence, mutation.Operation, mutation.TargetID, mutation.CreatedAt.Format(time.RFC3339Nano))
+	}
+	return nil
+}
+
+func runExplain(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("explain", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return errors.New("usage: trace explain [--json] FILE RECORD_ID")
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	explanation, err := store.Explain(ctx, fs.Arg(1))
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(explanation)
+	}
+	fmt.Printf("target: %s [%s]\n", explanation.TargetID, explanation.TargetKind)
+	fmt.Printf("source events: %d\n", len(explanation.SourceEvents))
+	fmt.Printf("source memories: %d\n", len(explanation.SourceMemories))
+	fmt.Printf("source entities: %d\n", len(explanation.SourceEntities))
+	fmt.Printf("derivations: %d\n", len(explanation.Derivations))
+	fmt.Printf("mutations: %d\n", len(explanation.Mutations))
+	return nil
+}
+
+func runDiff(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	from := fs.Int64("from", 0, "starting mutation sequence, exclusive")
+	to := fs.Int64("to", 0, "ending mutation sequence, inclusive; zero means current")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: trace diff [--json] [--from N] [--to N] FILE")
+	}
+	store, err := storage.Open(ctx, fs.Arg(0), true)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	diff, err := store.Diff(ctx, model.Snapshot{
+		Sequence: *from,
+	}, model.Snapshot{
+		Sequence: *to,
+	})
+	if err != nil {
+		return err
+	}
+	if *jsonOutput {
+		return writeJSON(diff)
+	}
+	fmt.Printf("from: %d\n", diff.From.Sequence)
+	fmt.Printf("to: %d\n", diff.To.Sequence)
+	fmt.Printf("mutations: %d\n", len(diff.Mutations))
+	for _, mutation := range diff.Mutations {
+		fmt.Printf("%d %s %s\n", mutation.Sequence, mutation.Operation, mutation.TargetID)
+	}
+	fmt.Printf("added records: %d\n", len(diff.Added))
+	return nil
 }
 
 func parseOptionalTime(value string) (*time.Time, error) {

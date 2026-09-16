@@ -159,3 +159,235 @@ func TestValidationDetectsTamperedEvent(t *testing.T) {
 		t.Fatal("tampered event passed validation")
 	}
 }
+
+func TestTemporalQueriesHistoryAndExplanation(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+
+	january := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	june := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	july := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	earlyRecorded := january.Add(24 * time.Hour)
+	lateRecorded := june.Add(24 * time.Hour)
+
+	torontoEvent, err := store.AddEvent(ctx, model.EventInput{
+		EventType:  "conversation.message",
+		Payload:    json.RawMessage(`{"content":"I live in Toronto"}`),
+		RecordedAt: earlyRecorded,
+		Namespace:  "user:tim",
+		Provenance: model.Provenance{SourceType: "test", SourceID: "message-toronto"},
+	})
+	if err != nil {
+		t.Fatalf("add Toronto event: %v", err)
+	}
+	torontoMemory, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:        "fact",
+		Content:     "Tim lives in Toronto",
+		RecordedAt:  earlyRecorded,
+		ValidFrom:   &january,
+		ValidTo:     &june,
+		Namespace:   "user:tim",
+		DerivedFrom: []string{torontoEvent.ID},
+		Provenance:  model.Provenance{SourceType: "test", SourceID: "message-toronto"},
+	})
+	if err != nil {
+		t.Fatalf("add Toronto memory: %v", err)
+	}
+	beforeVancouver, err := store.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("snapshot before Vancouver: %v", err)
+	}
+
+	vancouverEvent, err := store.AddEvent(ctx, model.EventInput{
+		EventType:  "conversation.message",
+		Payload:    json.RawMessage(`{"content":"I moved to Vancouver"}`),
+		RecordedAt: lateRecorded,
+		Namespace:  "user:tim",
+		Provenance: model.Provenance{SourceType: "test", SourceID: "message-vancouver"},
+	})
+	if err != nil {
+		t.Fatalf("add Vancouver event: %v", err)
+	}
+	vancouverMemory, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:        "fact",
+		Content:     "Tim lives in Vancouver",
+		RecordedAt:  lateRecorded,
+		ValidFrom:   &june,
+		Namespace:   "user:tim",
+		DerivedFrom: []string{vancouverEvent.ID},
+		Provenance:  model.Provenance{SourceType: "test", SourceID: "message-vancouver"},
+	})
+	if err != nil {
+		t.Fatalf("add Vancouver memory: %v", err)
+	}
+	supersession, err := store.AddRelation(ctx, model.RelationInput{
+		SourceID: vancouverMemory.ID,
+		TargetID: torontoMemory.ID,
+		Relation: model.RelationSupersedes,
+		Actor:    "test",
+	})
+	if err != nil {
+		t.Fatalf("add supersession: %v", err)
+	}
+	afterVancouver, err := store.Snapshot(ctx)
+	if err != nil {
+		t.Fatalf("snapshot after Vancouver: %v", err)
+	}
+
+	past, err := store.QueryMemories(ctx, model.MemoryQuery{
+		Namespace: "user:tim",
+		ValidAt:   timePointer(january.AddDate(0, 2, 0)),
+	})
+	if err != nil {
+		t.Fatalf("query Toronto point in time: %v", err)
+	}
+	if len(past.Memories) != 1 || past.Memories[0].ID != torontoMemory.ID {
+		t.Fatalf("past memories = %#v, want Toronto", past.Memories)
+	}
+
+	present, err := store.QueryMemories(ctx, model.MemoryQuery{
+		Namespace: "user:tim",
+		ValidAt:   &july,
+	})
+	if err != nil {
+		t.Fatalf("query Vancouver point in time: %v", err)
+	}
+	if len(present.Memories) != 1 || present.Memories[0].ID != vancouverMemory.ID {
+		t.Fatalf("present memories = %#v, want Vancouver", present.Memories)
+	}
+	recorded, err := store.QueryMemories(ctx, model.MemoryQuery{
+		Namespace:      "user:tim",
+		ValidAt:        timePointer(january.AddDate(0, 2, 0)),
+		RecordedBefore: timePointer(lateRecorded),
+	})
+	if err != nil {
+		t.Fatalf("query recorded-time boundary: %v", err)
+	}
+	if len(recorded.Memories) != 1 || recorded.Memories[0].ID != torontoMemory.ID {
+		t.Fatalf("recorded-time memories = %#v, want Toronto", recorded.Memories)
+	}
+
+	history, err := store.History(ctx, "")
+	if err != nil {
+		t.Fatalf("read history: %v", err)
+	}
+	if len(history) != 5 {
+		t.Fatalf("history length = %d, want 5", len(history))
+	}
+	for index := 1; index < len(history); index++ {
+		if history[index-1].Sequence >= history[index].Sequence {
+			t.Fatalf("history sequence is not increasing: %#v", history)
+		}
+	}
+
+	diff, err := store.Diff(ctx, beforeVancouver, afterVancouver)
+	if err != nil {
+		t.Fatalf("diff snapshots: %v", err)
+	}
+	if len(diff.Added) != 2 {
+		t.Fatalf("diff additions = %#v, want event and memory", diff.Added)
+	}
+	if diff.Mutations[len(diff.Mutations)-1].Operation != "relate" {
+		t.Fatalf("last diff operation = %q, want relate", diff.Mutations[len(diff.Mutations)-1].Operation)
+	}
+	if diff.Mutations[len(diff.Mutations)-1].TargetID != supersession.ID {
+		t.Fatalf("last diff target = %q, want %q", diff.Mutations[len(diff.Mutations)-1].TargetID, supersession.ID)
+	}
+
+	explanation, err := store.Explain(ctx, vancouverMemory.ID)
+	if err != nil {
+		t.Fatalf("explain Vancouver memory: %v", err)
+	}
+	if len(explanation.SourceEvents) != 1 || explanation.SourceEvents[0].ID != vancouverEvent.ID {
+		t.Fatalf("explanation source events = %#v, want Vancouver event", explanation.SourceEvents)
+	}
+	if len(explanation.Derivations) != 2 {
+		t.Fatalf("explanation derivations = %#v, want source and supersession", explanation.Derivations)
+	}
+	if len(explanation.Provenance) != 2 {
+		t.Fatalf("explanation provenance = %#v, want memory and event provenance", explanation.Provenance)
+	}
+	for _, provenance := range explanation.Provenance {
+		if provenance.SourceID != "message-vancouver" {
+			t.Fatalf("explanation provenance source = %q, want message-vancouver", provenance.SourceID)
+		}
+	}
+	if len(explanation.Mutations) != 2 {
+		t.Fatalf("explanation mutations = %#v, want memory and supersession", explanation.Mutations)
+	}
+}
+
+func TestContradictionsRemainVisible(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	first, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:       "fact",
+		Content:    "Tim prefers Python",
+		RecordedAt: start,
+		ValidFrom:  &start,
+		Namespace:  "user:tim",
+		Provenance: model.Provenance{SourceType: "test", SourceID: "first"},
+	})
+	if err != nil {
+		t.Fatalf("add first fact: %v", err)
+	}
+	second, err := store.AddMemory(ctx, model.MemoryInput{
+		Kind:       "fact",
+		Content:    "Tim prefers Go",
+		RecordedAt: start.Add(time.Hour),
+		ValidFrom:  &start,
+		Namespace:  "user:tim",
+		Provenance: model.Provenance{SourceType: "test", SourceID: "second"},
+	})
+	if err != nil {
+		t.Fatalf("add second fact: %v", err)
+	}
+	if _, err := store.AddRelation(ctx, model.RelationInput{
+		SourceID: second.ID,
+		TargetID: first.ID,
+		Relation: model.RelationContradicts,
+		Actor:    "test",
+	}); err != nil {
+		t.Fatalf("add contradiction: %v", err)
+	}
+
+	result, err := store.QueryMemories(ctx, model.MemoryQuery{
+		Namespace: "user:tim",
+		ValidAt:   timePointer(start.Add(time.Hour)),
+	})
+	if err != nil {
+		t.Fatalf("query contradiction: %v", err)
+	}
+	if result.EvidenceState != "conflicting" {
+		t.Fatalf("evidence state = %q, want conflicting", result.EvidenceState)
+	}
+	if len(result.Memories) != 2 || len(result.Conflicts) != 1 {
+		t.Fatalf("conflict result = %#v, want two memories and one group", result)
+	}
+	if result.Conflicts[0].Resolved {
+		t.Fatal("unresolved contradiction was marked resolved")
+	}
+}
+
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "memory.trc")
+	if err := Init(ctx, path, "trace-test"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	store, err := Open(ctx, path, false)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() {
+		store.Close()
+	})
+	return store
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
+}

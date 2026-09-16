@@ -243,7 +243,7 @@ func (s *Store) AddEvent(ctx context.Context, input model.EventInput) (model.Eve
 	); err != nil {
 		return model.Event{}, fmt.Errorf("insert event: %w", err)
 	}
-	if err := insertMutation(ctx, tx, "add_event", event.ID, event.Actor, event.ContentHash); err != nil {
+	if _, err := insertMutation(ctx, tx, "add_event", event.ID, event.Actor, event.ContentHash); err != nil {
 		return model.Event{}, err
 	}
 	if err := updateManifestTimestamp(ctx, tx, time.Now().UTC()); err != nil {
@@ -404,7 +404,7 @@ func (s *Store) AddMemory(ctx context.Context, input model.MemoryInput) (model.M
 			return model.Memory{}, fmt.Errorf("insert derivation: %w", err)
 		}
 	}
-	if err := insertMutation(ctx, tx, "remember", memory.ID, provenance.Agent, memory.ContentHash); err != nil {
+	if _, err := insertMutation(ctx, tx, "remember", memory.ID, provenance.Agent, memory.ContentHash); err != nil {
 		return model.Memory{}, err
 	}
 	if err := updateManifestTimestamp(ctx, tx, time.Now().UTC()); err != nil {
@@ -490,7 +490,7 @@ func (s *Store) AddEntity(ctx context.Context, input model.EntityInput) (model.E
 	); err != nil {
 		return model.Entity{}, fmt.Errorf("insert entity: %w", err)
 	}
-	if err := insertMutation(ctx, tx, "add_entity", entity.ID, provenance.Agent, entity.ContentHash); err != nil {
+	if _, err := insertMutation(ctx, tx, "add_entity", entity.ID, provenance.Agent, entity.ContentHash); err != nil {
 		return model.Entity{}, err
 	}
 	if err := updateManifestTimestamp(ctx, tx, now); err != nil {
@@ -1108,16 +1108,17 @@ func insertMutation(
 	ctx context.Context,
 	tx *sql.Tx,
 	operation, targetID, actor, requestHash string,
-) error {
+) (model.Mutation, error) {
 	mutationID, err := model.NewID()
 	if err != nil {
-		return err
+		return model.Mutation{}, err
 	}
 	commitID, err := model.NewID()
 	if err != nil {
-		return err
+		return model.Mutation{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `
+	createdAt := time.Now().UTC()
+	result, err := tx.ExecContext(ctx, `
 		INSERT INTO mutation (
 			id, commit_id, operation, target_id, actor, created_at,
 			request_hash, metadata
@@ -1128,13 +1129,28 @@ func insertMutation(
 		operation,
 		targetID,
 		actor,
-		model.FormatTime(time.Now().UTC()),
+		model.FormatTime(createdAt),
 		requestHash,
 		`{}`,
-	); err != nil {
-		return fmt.Errorf("insert mutation: %w", err)
+	)
+	if err != nil {
+		return model.Mutation{}, fmt.Errorf("insert mutation: %w", err)
 	}
-	return nil
+	sequence, err := result.LastInsertId()
+	if err != nil {
+		return model.Mutation{}, fmt.Errorf("read mutation sequence: %w", err)
+	}
+	return model.Mutation{
+		Sequence:    sequence,
+		ID:          mutationID,
+		CommitID:    commitID,
+		Operation:   operation,
+		TargetID:    targetID,
+		Actor:       actor,
+		CreatedAt:   createdAt,
+		RequestHash: requestHash,
+		Metadata:    json.RawMessage(`{}`),
+	}, nil
 }
 
 func prepareProvenance(provenance *model.Provenance, sourceID string) error {
