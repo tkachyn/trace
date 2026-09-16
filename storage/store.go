@@ -1224,11 +1224,27 @@ func insertMutation(
 	tx *sql.Tx,
 	operation, targetID, actor, requestHash string,
 ) (model.Mutation, error) {
-	mutationID, err := model.NewID()
+	commitID, err := model.NewID()
 	if err != nil {
 		return model.Mutation{}, err
 	}
-	commitID, err := model.NewID()
+	return insertMutationWithCommit(
+		ctx,
+		tx,
+		operation,
+		targetID,
+		actor,
+		requestHash,
+		commitID,
+	)
+}
+
+func insertMutationWithCommit(
+	ctx context.Context,
+	tx *sql.Tx,
+	operation, targetID, actor, requestHash, commitID string,
+) (model.Mutation, error) {
+	mutationID, err := model.NewID()
 	if err != nil {
 		return model.Mutation{}, err
 	}
